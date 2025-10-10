@@ -80,12 +80,17 @@ input.new-break-input {autocomplete:off !important;}
 S3_BUCKET = "superweirdonebud"
 S3_KEY = "Rotto_Tracker.csv"
 
-# Try to initialize S3 client with profile, fallback to default credentials
+# Initialize S3 client - try profile first, then environment variables, then IAM role (for EC2)
 try:
+    # Local development with profile
     s3 = boto3.Session(profile_name='doug-personal').client('s3', region_name='ap-southeast-2')
 except:
-    # Fallback to default credentials (environment variables, etc.)
-    s3 = boto3.client('s3', region_name='ap-southeast-2')
+    try:
+        # Production with environment variables or IAM role
+        s3 = boto3.client('s3', region_name='ap-southeast-2')
+    except Exception as e:
+        st.error(f"Failed to connect to AWS S3: {str(e)}")
+        st.stop()
 
 COLUMNS = ["Date","Time","Break","Zone","TOTAL SCORE",   # added Zone after Break
            "Surfline Primary Swell Size (m)","Seabreeze Swell (m)",
