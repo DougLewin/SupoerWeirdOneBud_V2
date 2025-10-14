@@ -22,7 +22,7 @@ jobs:
           cd ${{ secrets.EC2_PROJECT_DIR }}
           git pull origin main
           pip3 install -r requirements.txt
-          pkill -f "streamlit run superweirdonebud.py" || true
           source ${{ secrets.EC2_PROJECT_DIR }}/superweirdonebud_linux/bin/activate
+          pkill -f "streamlit run superweirdonebud.py" || true
           nohup streamlit run superweirdonebud.py --server.port 8501 --server.address 0.0.0.0 > streamlit.log 2>&1 &
           echo "Deployment complete! App running on http://${{ secrets.EC2_HOST }}:8501"
