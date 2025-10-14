@@ -76,32 +76,8 @@ input.new-break-input {autocomplete:off !important;}
 .final-score-box h4{margin:0 0 .4rem 0; color:#2eecb5;}
 .final-score-val{font-weight:700; color:#fff; font-size:1.05rem;}
 .final-score-label{color:#7fc9c5; font-size:.75rem; letter-spacing:.07em;}
-
-/* Draft Banner Styles */
-.draft-banner {
-  background: linear-gradient(45deg, #ff6b6b, #ee5a24);
-  color: white;
-  text-align: center;
-  padding: 1rem;
-  margin: -1rem -2rem 2rem -2rem;
-  font-weight: 900;
-  font-size: 1.5rem;
-  letter-spacing: 3px;
-  text-shadow: 2px 2px 4px rgba(0,0,0,0.7);
-  border-bottom: 4px solid #c0392b;
-  animation: pulse 2s infinite;
-}
-
-@keyframes pulse {
-  0% { opacity: 1; }
-  50% { opacity: 0.8; }
-  100% { opacity: 1; }
-}
 </style>
 """, unsafe_allow_html=True)
-
-# DRAFT BANNER
-st.markdown('<div class="draft-banner">⚠️ THIS IS A DRAFT ⚠️</div>', unsafe_allow_html=True)
 #### Added some test comment
 # S3 Configuration
 S3_BUCKET = "superweirdonebud"
