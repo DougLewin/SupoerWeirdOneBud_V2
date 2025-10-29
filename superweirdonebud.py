@@ -78,21 +78,22 @@ input.new-break-input {autocomplete:off !important;}
 .final-score-label{color:#7fc9c5; font-size:.75rem; letter-spacing:.07em;}
 </style>
 """, unsafe_allow_html=True)
-#### Added some test comment
+
 # S3 Configuration
 S3_BUCKET = "superweirdonebud"
 S3_KEY = "Rotto_Tracker.csv"
 
-# Initialize S3 client - try profile first, then environment variables, then IAM role (for EC2)
+# Initialize S3 client for Railway deployment
 try:
-    # Local development with profile
-    s3 = boto3.Session(profile_name='doug-personal').client('s3', region_name='ap-southeast-2')
+    # Try with environment variables first (Railway production)
+    s3 = boto3.client('s3', region_name='ap-southeast-2')
 except:
     try:
-        # Production with environment variables or IAM role
-        s3 = boto3.client('s3', region_name='ap-southeast-2')
+        # Fallback to local profile for development
+        s3 = boto3.Session(profile_name='doug-personal').client('s3', region_name='ap-southeast-2')
     except Exception as e:
         st.error(f"Failed to connect to AWS S3: {str(e)}")
+        st.error("Make sure AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables are set")
         st.stop()
 
 COLUMNS = ["Date","Time","Break","Zone","TOTAL SCORE",   # added Zone after Break
