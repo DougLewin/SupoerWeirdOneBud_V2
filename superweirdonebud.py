@@ -114,13 +114,27 @@ def load_df():
     try:
         obj = s3.get_object(Bucket=S3_BUCKET, Key=S3_KEY)
         return pd.read_csv(obj['Body'])
-    except:
+    except Exception as e:
+        st.error(f"⚠️ Failed to load data from S3: {str(e)}")
+        st.error(f"Bucket: {S3_BUCKET}, Key: {S3_KEY}")
+        if "InvalidAccessKeyId" in str(e) or "SignatureDoesNotMatch" in str(e):
+            st.error("❌ AWS credentials are invalid or expired. Please update your credentials.")
+            st.info("Check the AWS_CREDENTIALS_SETUP.md file for instructions.")
+        elif "NoSuchKey" in str(e):
+            st.warning("📄 The file doesn't exist in S3 yet. Create your first record!")
         return pd.DataFrame(columns=COLUMNS)
 
 def save_df(df):
-    csv_buffer = io.StringIO()
-    df.to_csv(csv_buffer, index=False)
-    s3.put_object(Bucket=S3_BUCKET, Key=S3_KEY, Body=csv_buffer.getvalue())
+    try:
+        csv_buffer = io.StringIO()
+        df.to_csv(csv_buffer, index=False)
+        s3.put_object(Bucket=S3_BUCKET, Key=S3_KEY, Body=csv_buffer.getvalue())
+        st.success("✅ Data saved to S3 successfully!")
+    except Exception as e:
+        st.error(f"❌ Failed to save data to S3: {str(e)}")
+        if "InvalidAccessKeyId" in str(e) or "SignatureDoesNotMatch" in str(e):
+            st.error("AWS credentials are invalid or expired. Data was NOT saved!")
+        raise e  # Re-raise so the caller knows the save failed
 
 def ensure_columns(df: pd.DataFrame) -> pd.DataFrame:
     # add missing
