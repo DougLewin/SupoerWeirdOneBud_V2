@@ -1,8 +1,10 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import datetime, boto3, io
-from pathlib import Path
+import datetime
+import boto3
+import io
+
 st.set_page_config(page_title="Rottnest Island Conditions Tracker", layout="wide", initial_sidebar_state="collapsed")
 st.markdown("""
 <style>
@@ -83,9 +85,9 @@ input.new-break-input {autocomplete:off !important;}
 S3_BUCKET = "superweirdonebud"
 S3_KEY = "Rotto_Tracker.csv"
 
-# Initialize S3 client for Railway deployment
+# Initialize S3 client
 try:
-    # Try with environment variables first (Railway production)
+    # Try with environment variables first (for production deployment)
     s3 = boto3.client('s3', region_name='ap-southeast-2')
 except:
     try:
@@ -96,7 +98,7 @@ except:
         st.error("Make sure AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables are set")
         st.stop()
 
-COLUMNS = ["Date","Time","Break","Zone","TOTAL SCORE",   # added Zone after Break
+COLUMNS = ["Date","Time","Break","Zone","TOTAL SCORE",
            "Surfline Primary Swell Size (m)","Seabreeze Swell (m)",
            "Swell Period (s)","Swell Direction","Suitable Swell?","Swell Score","Final Swell Score","Swell Comments",
            "Wind Bearing","Wind Speed (kn)","Suitable Wind?","Wind Score","Wind Final Score","Wind Comments",
@@ -183,7 +185,7 @@ if "Zone" not in surf_df.columns:
     surf_df["Zone"] = ""
 surf_df = ensure_columns(surf_df)
 
-# Normalize column names (trim spaces) then migrate legacy names to new headers
+# Normalize column names and migrate legacy column names
 surf_df.columns = surf_df.columns.str.strip()
 legacy_map = {
     "Swell Size": "Surfline Primary Swell Size (m)",
@@ -192,32 +194,30 @@ legacy_map = {
     "Swell Period": "Swell Period (s)",
     "Wind Speed": "Wind Speed (kn)",
     "Tide Reading": "Tide Reading (m)",
-    "Swell Direction ": "Swell Direction",          # handle trailing space
-    "Wind Bearing ": "Wind Bearing"                 # handle trailing space
+    "Swell Direction ": "Swell Direction",
+    "Wind Bearing ": "Wind Bearing"
 }
-for old,new in legacy_map.items():
+for old, new in legacy_map.items():
     if old in surf_df.columns and new not in surf_df.columns:
-        surf_df.rename(columns={old:new}, inplace=True)
+        surf_df.rename(columns={old: new}, inplace=True)
 surf_df = ensure_columns(surf_df)
 
-# Enforce types: swell direction numeric, wind bearing string
+# Enforce data types and normalize values
 if "Swell Direction" in surf_df.columns:
     surf_df["Swell Direction"] = pd.to_numeric(surf_df["Swell Direction"], errors="coerce").round(0)
-if "Wind Bearing" in surf_df.columns:
-    surf_df["Wind Bearing"] = surf_df["Wind Bearing"].fillna("").astype(str).replace({"nan":""})
 
 if "Wind Bearing" in surf_df.columns:
-    surf_df["Wind Bearing"] = surf_df["Wind Bearing"].fillna("").astype(str).replace({"nan":""})
+    surf_df["Wind Bearing"] = surf_df["Wind Bearing"].fillna("").astype(str).replace({"nan": ""})
+
 if "TOTAL SCORE" in surf_df.columns:
     surf_df["TOTAL SCORE"] = pd.to_numeric(surf_df["TOTAL SCORE"], errors="coerce").round(1)
 
-# NEW: normalize Tide Direction values (no schema change, only value cleanup)
 if "Tide Direction" in surf_df.columns:
     surf_df["Tide Direction"] = (
         surf_df["Tide Direction"]
         .astype(str)
         .str.strip()
-        .replace({"Dropping":"Falling"})
+        .replace({"Dropping": "Falling"})
     )
 
 st.title("Super Weird One Bud")
@@ -470,24 +470,6 @@ if not st.session_state.creating:
                 if ac1.button("Cancel Edit"):
                     st.session_state.editing=False; st.session_state.edit_index=None; st.session_state.confirm_delete=None; st.rerun()
                 save_clicked = ac2.button("Save Changes")
-                # --- Keyboard shortcut (Ctrl/Cmd + S) to click "Save Changes" ---
-                st.caption("Shortcut: Ctrl+S (or Cmd+S) to save while editing.")
-                st.markdown("""
-<script>
-(function(){
- if(window._rottoSaveBind) return;
- window._rottoSaveBind = true;
- document.addEventListener('keydown', function(e){
-   if((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's'){
-     e.preventDefault();
-     const btn = Array.from(document.querySelectorAll('button'))
-       .find(b => b.innerText.trim() === 'Save Changes');
-     if(btn){ btn.click(); }
-   }
- });
-})();
-</script>
-""", unsafe_allow_html=True)
                 if save_clicked:
                     # Full commentary from component comments
                     full_comm = " ".join([ec.get("Swell Comments","") or "", ec.get("Wind Comments","") or "", ec.get("Tide Comments","") or ""]).strip()
@@ -566,10 +548,10 @@ else:
     factor_map = {"Yes":1,"Ok":0.5,"No":0,"Too Big":0}
     layout_cols = st.columns([2,1])
     with layout_cols[0]:
-        whole_int = {"Swell Period (s)","Swell Direction","Wind Speed (kn)"}  # removed Wind Bearing
+        whole_int = {"Swell Period (s)","Swell Direction","Wind Speed (kn)"}
         int_scores = {"Swell Score","Tide Score","Wind Score"}
         one_dp = {"Surfline Primary Swell Size (m)","Seabreeze Swell (m)","Wind Final Score","Tide Reading (m)","Tide Final Score","Final Swell Score"}
-        # REMOVED inline tide page total score pre-calculation
+        
         for f in PAGES[p][1]:
             label = UNIT_LABELS.get(f, f)
             if f=="Zone":
@@ -662,7 +644,7 @@ else:
     c1,c2,c3,c4 = st.columns(4)
     if c1.button("Cancel"): st.session_state.creating=False; st.session_state.draft={}; st.rerun()
     if p>0 and c2.button("Prev"): st.session_state.c_page-=1; st.rerun()
-    # UPDATED Next with validation
+    
     if p < len(PAGES)-1:
         if c3.button("Next"):
             d = st.session_state.draft
@@ -686,7 +668,6 @@ else:
                 st.rerun()
     if p == len(PAGES)-1 and c4.button("Submit"):
         d = st.session_state.draft
-        # NEW VALIDATION (updated - swell size must be >0)
         comments_present = has_any_comment(d)
         missing = []
         if not (d.get("Break","") or "").strip(): missing.append("Break")
