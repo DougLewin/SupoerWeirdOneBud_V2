@@ -37,6 +37,26 @@ if 'c_page' not in st.session_state:
     st.session_state.c_page = 0
 if 'draft' not in st.session_state:
     st.session_state.draft = {}
+if 'detail' not in st.session_state:
+    st.session_state.detail = None
+if 'editing' not in st.session_state:
+    st.session_state.editing = False
+if 'edit_index' not in st.session_state:
+    st.session_state.edit_index = None
+if 'edit_cache' not in st.session_state:
+    st.session_state.edit_cache = {}
+if 'confirm_delete' not in st.session_state:
+    st.session_state.confirm_delete = None
+if 'filter_break' not in st.session_state:
+    st.session_state.filter_break = "All"
+if 'filter_zone' not in st.session_state:
+    st.session_state.filter_zone = "All"
+if 'sort_col' not in st.session_state:
+    st.session_state.sort_col = "Date"
+if 'sort_desc' not in st.session_state:
+    st.session_state.sort_desc = True
+if 'summary_page' not in st.session_state:
+    st.session_state.summary_page = 0
 
 # ============================================================
 # AUTHENTICATION FUNCTIONS
@@ -419,33 +439,412 @@ with st.sidebar:
         sign_out()
         st.rerun()
 
-# Import the rest of the application logic from the original file
-# This section will contain all the surf tracking functionality
-# For now, let's create a simple version:
-
-st.title("Super Weird One Bud - Surf Tracker")
+st.title("🏄 Rottnest Island Conditions Tracker")
 
 # Load user records (needed for both views and for populating dropdowns in create)
 records_df = load_user_records()
 
-# Show simple create/view toggle
+# SUMMARY / LIST VIEW
 if not st.session_state.creating:
-    if st.button("➕ Create New Session"):
+    # Create button (floating style will be applied via CSS)
+    st.markdown('<div class="create-float">', unsafe_allow_html=True)
+    if st.button("➕ Create New Session", key="create_new"):
         st.session_state.creating = True
         st.session_state.c_page = 0
         st.session_state.draft = {}
         st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
     
-    # Load and display user's records
-    st.subheader("Your Surf Sessions")
+    st.markdown("## Your Sessions")
     
-    if not records_df.empty:
-        # Display simplified view
-        display_cols = ['Date', 'Break', 'Zone', 'TOTAL SCORE']
-        available_cols = [col for col in display_cols if col in records_df.columns]
-        st.dataframe(records_df[available_cols])
-    else:
+    if records_df.empty:
         st.info("No sessions recorded yet. Click 'Create New Session' to add your first one!")
+    else:
+        # Filters
+        filter_cols = st.columns(3)
+        
+        # Break filter
+        all_breaks = sorted([b for b in records_df["Break"].dropna().unique() if str(b).strip()])
+        break_options = ["All"] + all_breaks
+        with filter_cols[0]:
+            st.session_state.filter_break = st.selectbox(
+                "Filter by Break", 
+                break_options, 
+                index=break_options.index(st.session_state.filter_break) if st.session_state.filter_break in break_options else 0
+            )
+        
+        # Zone filter
+        all_zones = sorted([z for z in records_df["Zone"].dropna().unique() if str(z).strip()])
+        zone_options = ["All"] + all_zones
+        with filter_cols[1]:
+            st.session_state.filter_zone = st.selectbox(
+                "Filter by Zone", 
+                zone_options, 
+                index=zone_options.index(st.session_state.filter_zone) if st.session_state.filter_zone in zone_options else 0
+            )
+        
+        # Apply filters
+        surf_df = records_df.copy()
+        if st.session_state.filter_break != "All":
+            surf_df = surf_df[surf_df["Break"] == st.session_state.filter_break]
+        if st.session_state.filter_zone != "All":
+            surf_df = surf_df[surf_df["Zone"] == st.session_state.filter_zone]
+        
+        if surf_df.empty:
+            st.info("No records match the current filters.")
+        else:
+            # Sort
+            if st.session_state.sort_col in surf_df.columns:
+                surf_df = surf_df.sort_values(by=st.session_state.sort_col, ascending=not st.session_state.sort_desc)
+            
+            # Pagination
+            rows_per_page = 20
+            total_rows = len(surf_df)
+            total_pages = (total_rows + rows_per_page - 1) // rows_per_page
+            current_page = min(st.session_state.summary_page, total_pages - 1) if total_pages > 0 else 0
+            start = current_page * rows_per_page
+            end = start + rows_per_page
+            page_view = surf_df.iloc[start:end]
+            
+            # Summary table header
+            cols_show = ["Date", "Break", "Zone", "TOTAL SCORE", "Full Commentary"]
+            widths = [1, 1.5, 1, 1, 2, 0.8]
+            sortable = ["Date", "Break", "Zone", "TOTAL SCORE"]
+            
+            st.markdown('<div class="summary-header">', unsafe_allow_html=True)
+            header_cols = st.columns(widths)
+            for i, h in enumerate(cols_show):
+                display_h = h
+                if h in sortable:
+                    arrow = "▼" if (st.session_state.sort_col == h and st.session_state.sort_desc) else ("▲" if st.session_state.sort_col == h else "")
+                    if header_cols[i].button(f"{display_h} {arrow}", key=f"sort_{h}"):
+                        if st.session_state.sort_col == h:
+                            st.session_state.sort_desc = not st.session_state.sort_desc
+                        else:
+                            st.session_state.sort_col = h
+                            st.session_state.sort_desc = True
+                        st.session_state.summary_page = 0
+                        st.rerun()
+                else:
+                    header_cols[i].markdown(f"*{display_h}*")
+            header_cols[-1].markdown("*Details*")
+            st.markdown('</div>', unsafe_allow_html=True)
+            
+            # Display rows
+            for idx, row in page_view.iterrows():
+                st.markdown('<div class="summary-row">', unsafe_allow_html=True)
+                row_cols = st.columns(widths)
+                for i, c in enumerate(cols_show):
+                    val = row.get(c)
+                    if c == "TOTAL SCORE" and pd.notna(val):
+                        try:
+                            val = round(float(val), 1)
+                        except:
+                            pass
+                    if c == "Full Commentary":
+                        # Truncate long commentary
+                        val_str = str(val) if pd.notna(val) else ""
+                        if len(val_str) > 60:
+                            val = val_str[:60] + "..."
+                        else:
+                            val = val_str
+                    row_cols[i].write(val)
+                
+                # Store the record ID for details view
+                record_id = row.get('id')
+                if row_cols[-1].button("See details", key=f"d_{idx}"):
+                    st.session_state.detail = record_id
+                    st.rerun()
+                st.markdown('</div>', unsafe_allow_html=True)
+            
+            # Pagination controls
+            if total_pages > 1:
+                pc1, pc2, pc3 = st.columns([1, 1, 4])
+                with pc1:
+                    if st.button("← Prev", disabled=current_page == 0):
+                        st.session_state.summary_page = current_page - 1
+                        st.rerun()
+                with pc2:
+                    if st.button("Next →", disabled=current_page >= total_pages - 1):
+                        st.session_state.summary_page = current_page + 1
+                        st.rerun()
+                with pc3:
+                    st.write(f"Page {current_page + 1} / {total_pages} (rows {start + 1}-{min(end, total_rows)} of {total_rows})")
+            
+            # DETAILS VIEW
+            if st.session_state.detail is not None:
+                # Find the record in the original dataframe
+                detail_record = records_df[records_df['id'] == st.session_state.detail]
+                
+                if not detail_record.empty:
+                    r = detail_record.iloc[0]
+                    record_id = r['id']
+                    
+                    with st.expander(f"📋 Details for {r.get('Break', 'Record')}", expanded=True):
+                        factor_map = {"Yes": 1, "Ok": 0.5, "No": 0, "Too Big": 0}
+                        key_fields = [
+                            "Surfline Primary Swell Size (m)", "Seabreeze Swell (m)", 
+                            "Swell Period (s)", "Swell Direction", "Wind Speed (kn)", 
+                            "Wind Bearing", "Tide Reading (m)", "Tide Direction"
+                        ]
+                        
+                        if not (st.session_state.editing and st.session_state.edit_index == record_id):
+                            # READ-ONLY DISPLAY MODE
+                            hdr_cols = st.columns([6, 1])
+                            with hdr_cols[0]:
+                                st.markdown("### Session Details")
+                            with hdr_cols[1]:
+                                if st.button("✏️ Edit", key=f"edit_{record_id}"):
+                                    st.session_state.editing = True
+                                    st.session_state.edit_index = record_id
+                                    st.session_state.edit_cache = r.to_dict()
+                                    st.rerun()
+                            
+                            # Key metrics at top
+                            kvals = {k: r.get(k) for k in key_fields if k in r}
+                            top_cols = st.columns(4)
+                            for i, (k, v) in enumerate(kvals.items()):
+                                label = UNIT_LABELS.get(k, k)
+                                with top_cols[i % 4]:
+                                    st.metric(label, v if pd.notna(v) else "N/A")
+                            
+                            st.markdown("---")
+                            
+                            # All other fields
+                            detail_cols = st.columns(2)
+                            all_fields = [
+                                "Date", "Time", "Break", "Zone",
+                                "Suitable Swell?", "Swell Score", "Final Swell Score", "Swell Comments",
+                                "Suitable Wind?", "Wind Score", "Wind Final Score", "Wind Comments",
+                                "Tide Suitable?", "Tide Score", "Tide Final Score", "Tide Comments",
+                                "TOTAL SCORE"
+                            ]
+                            
+                            for i, c in enumerate(all_fields):
+                                if c in key_fields:
+                                    continue
+                                label = UNIT_LABELS.get(c, c)
+                                val = r.get(c)
+                                if c == "Full Commentary":
+                                    with detail_cols[0]:
+                                        st.markdown(f"**{label}:**")
+                                        st.write(val if pd.notna(val) else "N/A")
+                                else:
+                                    with detail_cols[i % 2]:
+                                        if "Comments" in c:
+                                            st.markdown(f"**{label}:**")
+                                            st.write(val if pd.notna(val) else "N/A")
+                                        else:
+                                            st.write(f"**{label}:** {val if pd.notna(val) else 'N/A'}")
+                            
+                            # Full Commentary
+                            st.markdown("---")
+                            st.markdown("**Full Commentary:**")
+                            st.write(r.get("Full Commentary", "N/A"))
+                            
+                            if st.button("Close details"):
+                                st.session_state.detail = None
+                                st.rerun()
+                        
+                        else:
+                            # EDIT MODE
+                            ec = st.session_state.edit_cache
+                            st.markdown("### ✏️ Edit Record")
+                            
+                            # Editable fields (exclude computed finals & TOTAL SCORE initially)
+                            edit_fields = [
+                                "Date", "Time", "Break", "Zone",
+                                "Surfline Primary Swell Size (m)", "Seabreeze Swell (m)", "Swell Period (s)", 
+                                "Swell Direction", "Suitable Swell?", "Swell Score", "Swell Comments",
+                                "Wind Bearing", "Wind Speed (kn)", "Suitable Wind?", "Wind Score", "Wind Comments",
+                                "Tide Reading (m)", "Tide Direction", "Tide Suitable?", "Tide Score", "Tide Comments"
+                            ]
+                            
+                            # Display editable fields
+                            for f in edit_fields:
+                                label = UNIT_LABELS.get(f, f)
+                                
+                                if f == "Date":
+                                    try:
+                                        date_val = pd.to_datetime(ec.get(f)).date() if pd.notna(ec.get(f)) else datetime.date.today()
+                                    except:
+                                        date_val = datetime.date.today()
+                                    ec[f] = st.date_input(label, date_val, key=f"edit_{f}")
+                                
+                                elif f == "Time":
+                                    try:
+                                        time_str = str(ec.get(f, "08:00:00"))
+                                        if isinstance(ec.get(f), datetime.time):
+                                            time_val = ec.get(f)
+                                        else:
+                                            tparts = time_str.split(":")
+                                            time_val = datetime.time(int(tparts[0]), int(tparts[1]))
+                                    except:
+                                        time_val = datetime.time(8, 0)
+                                    ec[f] = st.time_input(label, time_val, key=f"edit_{f}")
+                                
+                                elif f == "Wind Bearing":
+                                    idx_opt = COMPASS_DIRECTIONS.index(ec.get(f)) if ec.get(f) in COMPASS_DIRECTIONS else 0
+                                    ec[f] = st.selectbox(label, COMPASS_DIRECTIONS, index=idx_opt, key=f"edit_{f}")
+                                
+                                elif f == "Tide Direction":
+                                    tide_opts = ["High", "Low", "Falling", "Rising"]
+                                    cur_val = ec.get(f)
+                                    if cur_val == "Dropping":  # legacy value
+                                        cur_val = "Falling"
+                                    idx = tide_opts.index(cur_val) if cur_val in tide_opts else 0
+                                    ec[f] = st.selectbox(label, tide_opts, index=idx, key=f"edit_{f}")
+                                
+                                elif f == "Zone":
+                                    # Get existing zones from user's records
+                                    existing_zones = sorted([z for z in records_df["Zone"].dropna().unique() if str(z).strip()])
+                                    z_opts = existing_zones + ["Add new..."]
+                                    cur_z = ec.get(f, "")
+                                    z_idx = z_opts.index(cur_z) if cur_z in z_opts else 0
+                                    z_sel = st.selectbox("Zone (existing or new)", z_opts, index=z_idx, key=f"edit_{f}")
+                                    if z_sel == "Add new...":
+                                        ec[f] = st.text_input("New Zone Name", "", key="edit_new_zone").strip()
+                                    else:
+                                        ec[f] = z_sel
+                                
+                                elif f == "Break":
+                                    # Get existing breaks
+                                    existing_breaks = sorted([b for b in records_df["Break"].dropna().unique() if str(b).strip()])
+                                    b_opts = existing_breaks + ["Add new..."]
+                                    cur_b = ec.get(f, "")
+                                    b_idx = b_opts.index(cur_b) if cur_b in b_opts else 0
+                                    b_sel = st.selectbox("Break (existing or new)", b_opts, index=b_idx, key=f"edit_{f}")
+                                    if b_sel == "Add new...":
+                                        ec[f] = st.text_input("New Break Name", "", key="edit_new_break").strip()
+                                    else:
+                                        ec[f] = b_sel
+                                
+                                elif "Suitable" in f:
+                                    opts = ["Yes", "No", "Ok", "Too Big"] if "Swell" in f else ["Yes", "No", "Ok"]
+                                    cur_val = ec.get(f, "Yes")
+                                    idx = opts.index(cur_val) if cur_val in opts else 0
+                                    ec[f] = st.selectbox(label, opts, index=idx, key=f"edit_{f}")
+                                
+                                elif "Comments" in f:
+                                    val = ec.get(f, "")
+                                    if pd.isna(val):
+                                        val = ""
+                                    ec[f] = st.text_area(label, val, key=f"edit_{f}")
+                                
+                                elif f in ["Swell Period (s)", "Swell Direction", "Wind Speed (kn)"]:
+                                    ec[f] = st.number_input(label, value=safe_int(ec.get(f)), step=1, format="%d", key=f"edit_{f}")
+                                
+                                elif f in ["Swell Score", "Wind Score", "Tide Score"]:
+                                    ec[f] = st.number_input(label, min_value=0, max_value=10, 
+                                                          value=safe_int(ec.get(f)), step=1, format="%d", key=f"edit_{f}")
+                                
+                                elif f in ["Surfline Primary Swell Size (m)", "Seabreeze Swell (m)", "Tide Reading (m)"]:
+                                    ec[f] = st.number_input(label, value=safe_float(ec.get(f)), step=0.1, format="%.1f", key=f"edit_{f}")
+                                
+                                else:
+                                    ec[f] = st.text_input(label, str(ec.get(f) or ""), key=f"edit_{f}")
+                            
+                            # Recompute final scores
+                            final_swell = round((ec.get("Swell Score") or 0) * factor_map.get(ec.get("Suitable Swell?"), 0), 1)
+                            final_wind = round((ec.get("Wind Score") or 0) * factor_map.get(ec.get("Suitable Wind?"), 0), 1)
+                            final_tide = round((ec.get("Tide Score") or 0) * factor_map.get(ec.get("Tide Suitable?"), 0), 1)
+                            total_score = (final_swell * final_wind * final_tide) / 3 if all(v is not None for v in [final_swell, final_wind, final_tide]) else 0
+                            total_score = round(total_score, 1)
+                            
+                            st.markdown(f"**Live Final Scores:** Swell `{final_swell}` | Wind `{final_wind}` | Tide `{final_tide}` | Total `{total_score:.1f}`")
+                            
+                            # Action buttons
+                            st.markdown("---")
+                            ac1, ac2, ac3, ac4 = st.columns(4)
+                            
+                            if ac1.button("❌ Cancel"):
+                                st.session_state.editing = False
+                                st.session_state.edit_index = None
+                                st.session_state.confirm_delete = None
+                                st.rerun()
+                            
+                            save_clicked = ac2.button("💾 Save Changes")
+                            
+                            if save_clicked:
+                                # Build full commentary from component comments
+                                full_comm = " ".join([
+                                    ec.get("Swell Comments", "") or "", 
+                                    ec.get("Wind Comments", "") or "", 
+                                    ec.get("Tide Comments", "") or ""
+                                ]).strip()
+                                
+                                # Ensure Swell Direction is an integer
+                                if "Swell Direction" in ec and ec.get("Swell Direction") not in (None, ""):
+                                    try:
+                                        ec["Swell Direction"] = int(float(ec["Swell Direction"]))
+                                    except:
+                                        pass
+                                
+                                # Build update record
+                                update_data = {
+                                    'Date': ec.get("Date"),
+                                    'Time': ec.get("Time"),
+                                    'Break': ec.get("Break"),
+                                    'Zone': ec.get("Zone"),
+                                    'Surfline Primary Swell Size (m)': ec.get("Surfline Primary Swell Size (m)"),
+                                    'Seabreeze Swell (m)': ec.get("Seabreeze Swell (m)"),
+                                    'Swell Period (s)': ec.get("Swell Period (s)"),
+                                    'Swell Direction': ec.get("Swell Direction"),
+                                    'Suitable Swell?': ec.get("Suitable Swell?"),
+                                    'Swell Score': ec.get("Swell Score"),
+                                    'Final Swell Score': final_swell,
+                                    'Swell Comments': ec.get("Swell Comments"),
+                                    'Wind Bearing': ec.get("Wind Bearing"),
+                                    'Wind Speed (kn)': ec.get("Wind Speed (kn)"),
+                                    'Suitable Wind?': ec.get("Suitable Wind?"),
+                                    'Wind Score': ec.get("Wind Score"),
+                                    'Wind Final Score': final_wind,
+                                    'Wind Comments': ec.get("Wind Comments"),
+                                    'Tide Reading (m)': ec.get("Tide Reading (m)"),
+                                    'Tide Direction': ec.get("Tide Direction"),
+                                    'Tide Suitable?': ec.get("Tide Suitable?"),
+                                    'Tide Score': ec.get("Tide Score"),
+                                    'Tide Final Score': final_tide,
+                                    'Tide Comments': ec.get("Tide Comments"),
+                                    'TOTAL SCORE': total_score,
+                                    'Full Commentary': full_comm
+                                }
+                                
+                                if update_record(record_id, update_data):
+                                    st.success("✅ Record updated successfully!")
+                                    st.session_state.editing = False
+                                    st.session_state.edit_index = None
+                                    st.session_state.detail = None
+                                    st.rerun()
+                            
+                            # DELETE workflow
+                            if ac3.button("🗑️ Delete Record", key=f"del_{record_id}"):
+                                st.session_state.confirm_delete = record_id if st.session_state.confirm_delete != record_id else None
+                            
+                            if st.session_state.confirm_delete == record_id:
+                                st.warning("⚠️ Confirm delete? This cannot be undone.")
+                                dc1, dc2 = st.columns(2)
+                                if dc1.button("✓ Yes, delete now", key=f"del_yes_{record_id}"):
+                                    if delete_record(record_id):
+                                        st.success("✅ Record deleted successfully!")
+                                        st.session_state.detail = None
+                                        st.session_state.editing = False
+                                        st.session_state.edit_index = None
+                                        st.session_state.confirm_delete = None
+                                        st.rerun()
+                                if dc2.button("✗ Cancel delete", key=f"del_no_{record_id}"):
+                                    st.session_state.confirm_delete = None
+                                    st.rerun()
+                            
+                            if ac4.button("Close"):
+                                st.session_state.detail = None
+                                st.session_state.editing = False
+                                st.session_state.edit_index = None
+                                st.session_state.confirm_delete = None
+                                st.rerun()
+                else:
+                    st.session_state.detail = None
+                    st.rerun()
 
 else:
     # MULTI-PAGE CREATE WIZARD
