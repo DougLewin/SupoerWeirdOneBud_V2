@@ -136,30 +136,44 @@ CREATE POLICY "Users can insert their own profile"
     WITH CHECK (auth.uid() = id);
 
 -- RECORDS POLICIES
--- Users can view:
--- - Their own private records
--- - All public records
--- - Community records if they're a member
-CREATE POLICY "Users can view accessible records"
-    ON public.records FOR SELECT
-    USING (
-        (publicity = 'Private' AND user_id = auth.uid())
-        OR (publicity = 'Public')
-        OR (publicity = 'Community' AND EXISTS (
-            SELECT 1 FROM public.community_members
-            WHERE community_id = records.community_id
-            AND user_id = auth.uid()
-        ))
-    );
 
+-- Users can insert their own records
 CREATE POLICY "Users can insert their own records"
     ON public.records FOR INSERT
     WITH CHECK (user_id = auth.uid());
 
+-- Users can view their own private records
+CREATE POLICY "Users can view their own private records"
+    ON public.records FOR SELECT
+    USING (
+        user_id = auth.uid() 
+        AND publicity = 'Private'
+    );
+
+-- Anyone can view public records
+CREATE POLICY "Anyone can view public records"
+    ON public.records FOR SELECT
+    USING (publicity = 'Public');
+
+-- Community members can view community records
+CREATE POLICY "Community members can view community records"
+    ON public.records FOR SELECT
+    USING (
+        publicity = 'Community' 
+        AND community_id IN (
+            SELECT community_id 
+            FROM public.community_members 
+            WHERE user_id = auth.uid()
+        )
+    );
+
+-- Users can update their own records
 CREATE POLICY "Users can update their own records"
     ON public.records FOR UPDATE
-    USING (user_id = auth.uid());
+    USING (user_id = auth.uid())
+    WITH CHECK (user_id = auth.uid());
 
+-- Users can delete their own records
 CREATE POLICY "Users can delete their own records"
     ON public.records FOR DELETE
     USING (user_id = auth.uid());
@@ -238,16 +252,20 @@ CREATE TRIGGER update_records_updated_at
 CREATE OR REPLACE FUNCTION public.handle_new_user()
 RETURNS TRIGGER AS $$
 BEGIN
-    INSERT INTO public.profiles (id, email, full_name)
+    INSERT INTO public.profiles (id, email, full_name, created_at, updated_at)
     VALUES (
-        NEW.id, 
-        NEW.email, 
-        COALESCE(NEW.raw_user_meta_data->>'full_name', '')
-    );
+        NEW.id,
+        NEW.email,
+        COALESCE(NEW.raw_user_meta_data->>'full_name', ''),
+        NOW(),
+        NOW()
+    )
+    ON CONFLICT (id) DO NOTHING;
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
 CREATE TRIGGER on_auth_user_created
     AFTER INSERT ON auth.users
     FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
