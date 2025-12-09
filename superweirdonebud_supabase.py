@@ -31,6 +31,12 @@ if 'user' not in st.session_state:
     st.session_state.user = None
 if 'session' not in st.session_state:
     st.session_state.session = None
+if 'creating' not in st.session_state:
+    st.session_state.creating = False
+if 'c_page' not in st.session_state:
+    st.session_state.c_page = 0
+if 'draft' not in st.session_state:
+    st.session_state.draft = {}
 
 # ============================================================
 # AUTHENTICATION FUNCTIONS
@@ -144,9 +150,21 @@ def save_record(record_data: dict) -> bool:
         return False
     
     try:
+        # Ensure user profile exists first
+        user_id = st.session_state.user.id
+        profile_check = supabase.table('profiles').select('id').eq('id', user_id).execute()
+        
+        if not profile_check.data:
+            # Create profile if it doesn't exist
+            supabase.table('profiles').insert({
+                'id': user_id,
+                'email': st.session_state.user.email,
+                'full_name': st.session_state.user.user_metadata.get('full_name', '')
+            }).execute()
+        
         # Convert from display format to database snake_case format
         db_record = {
-            'user_id': st.session_state.user.id,
+            'user_id': user_id,
             'publicity': record_data.get('publicity', 'Private'),
             'date': str(record_data.get('Date')),
             'time': str(record_data.get('Time')),
@@ -241,6 +259,40 @@ def delete_record(record_id: str) -> bool:
         return False
 
 # ============================================================
+# HELPER FUNCTIONS
+# ============================================================
+def safe_int(v, default=0):
+    try:
+        if v is None: return default
+        if isinstance(v, str):
+            v = v.strip()
+            if v == "": return default
+        fv = float(v)
+        if np.isnan(fv): return default
+        return int(fv)
+    except:
+        return default
+
+def safe_float(v, default=0.0):
+    try:
+        if v is None: return default
+        if isinstance(v, str):
+            v = v.strip()
+            if v == "": return default
+        fv = float(v)
+        if np.isnan(fv): return default
+        return fv
+    except:
+        return default
+
+def has_any_comment(d: dict) -> bool:
+    return any([
+        (d.get("Swell Comments","") or "").strip(),
+        (d.get("Wind Comments","") or "").strip(),
+        (d.get("Tide Comments","") or "").strip()
+    ])
+
+# ============================================================
 # STYLING
 # ============================================================
 st.markdown("""
@@ -269,6 +321,18 @@ body {background:#0e1117;}
   box-shadow: 0 4px 18px -4px rgba(0,0,0,0.55);
 }
 
+.final-score-box {
+  background:linear-gradient(135deg,#143b3f 0%,#0f2b30 60%); 
+  border:2px solid #2e6f75; 
+  padding:0.9rem 1.1rem; 
+  border-radius:14px; 
+  box-shadow:0 0 0 1px #1a474d, 0 4px 10px -2px rgba(0,0,0,0.55); 
+  font-size:0.95rem;
+}
+.final-score-box h4{margin:0 0 .4rem 0; color:#2eecb5;}
+.final-score-val{font-weight:700; color:#fff; font-size:1.05rem;}
+.final-score-label{color:#7fc9c5; font-size:.75rem; letter-spacing:.07em;}
+
 .stButton>button {
   width: 100%;
   background: #0f3d3d;
@@ -286,6 +350,17 @@ body {background:#0e1117;}
 }
 </style>
 """, unsafe_allow_html=True)
+
+# Constants
+COMPASS_DIRECTIONS = ["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"]
+
+UNIT_LABELS = {
+    "Surfline Primary Swell Size (m)": "Surfline Swell (m)",
+    "Seabreeze Swell (m)": "Seabreeze Swell (m)",
+    "Swell Period (s)": "Swell Period (s)",
+    "Wind Speed (kn)": "Wind Speed (kn)",
+    "Tide Reading (m)": "Tide Reading (m)"
+}
 
 # ============================================================
 # AUTHENTICATION UI
@@ -349,20 +424,20 @@ with st.sidebar:
 # For now, let's create a simple version:
 
 st.title("Super Weird One Bud - Surf Tracker")
-st.write("Welcome! You're now logged in and can start tracking surf sessions.")
+
+# Load user records (needed for both views and for populating dropdowns in create)
+records_df = load_user_records()
 
 # Show simple create/view toggle
-if 'creating' not in st.session_state:
-    st.session_state.creating = False
-
 if not st.session_state.creating:
     if st.button("➕ Create New Session"):
         st.session_state.creating = True
+        st.session_state.c_page = 0
+        st.session_state.draft = {}
         st.rerun()
     
     # Load and display user's records
     st.subheader("Your Surf Sessions")
-    records_df = load_user_records()
     
     if not records_df.empty:
         # Display simplified view
@@ -373,69 +448,259 @@ if not st.session_state.creating:
         st.info("No sessions recorded yet. Click 'Create New Session' to add your first one!")
 
 else:
-    st.subheader("Create New Session")
-    
+    # MULTI-PAGE CREATE WIZARD
+    st.markdown("### New Record")
     if st.button("← Back to List"):
         st.session_state.creating = False
+        st.session_state.draft = {}
         st.rerun()
     
-    # Simple form for now
-    with st.form("new_session"):
-        col1, col2 = st.columns(2)
+    # Define pages
+    P1 = ["Visibility","Zone","Break","Date","Time"]
+    SWELL = ["Surfline Primary Swell Size (m)","Seabreeze Swell (m)","Swell Period (s)","Swell Direction","Suitable Swell?","Swell Score","Swell Comments"]
+    WIND  = ["Wind Bearing","Wind Speed (kn)","Suitable Wind?","Wind Score","Wind Comments"]
+    TIDE  = ["Tide Reading (m)","Tide Direction","Tide Suitable?","Tide Score","Tide Comments"]
+    PAGES = [("Session",P1),("Swell",SWELL),("Wind",WIND),("Tide",TIDE)]
+    
+    p = st.session_state.c_page
+    st.markdown(f"*Page {p+1}/{len(PAGES)}: {PAGES[p][0]}*")
+    
+    factor_map = {"Yes":1,"Ok":0.5,"No":0,"Too Big":0}
+    layout_cols = st.columns([2,1])
+    
+    with layout_cols[0]:
+        whole_int = {"Swell Period (s)","Swell Direction","Wind Speed (kn)"}
+        int_scores = {"Swell Score","Tide Score","Wind Score"}
+        one_dp = {"Surfline Primary Swell Size (m)","Seabreeze Swell (m)","Wind Final Score","Tide Reading (m)","Tide Final Score","Final Swell Score"}
         
-        with col1:
-            session_date = st.date_input("Date", datetime.date.today())
-            session_time = st.time_input("Time", datetime.time(8, 0))
-            break_name = st.text_input("Break")
-            zone_name = st.text_input("Zone")
-        
-        with col2:
-            publicity = st.selectbox("Visibility", ["Private", "Public", "Community"])
-            total_score = st.number_input("Total Score", min_value=0.0, max_value=100.0, value=0.0, step=0.1)
-        
-        swell_comments = st.text_area("Swell Comments")
-        wind_comments = st.text_area("Wind Comments")
-        tide_comments = st.text_area("Tide Comments")
-        
-        submitted = st.form_submit_button("Save Session")
-        
-        if submitted:
-            if break_name:
-                full_commentary = f"{swell_comments} {wind_comments} {tide_comments}".strip()
+        for f in PAGES[p][1]:
+            label = UNIT_LABELS.get(f, f)
+            
+            if f=="Visibility":
+                visibility_opts = ["Public", "Private", "Community"]
+                prev_visibility = st.session_state.draft.get("Visibility", "Public")
+                vis_idx = visibility_opts.index(prev_visibility) if prev_visibility in visibility_opts else 0
+                st.session_state.draft["Visibility"] = st.selectbox(
+                    "Record Visibility",
+                    visibility_opts,
+                    index=vis_idx,
+                    help="Public: Everyone can see | Private: Only you | Community: Your community members"
+                )
+            
+            elif f=="Zone":
+                # Get existing zones from user's records
+                existing_zones = []
+                if not records_df.empty and 'Zone' in records_df.columns:
+                    existing_zones = sorted([z for z in records_df["Zone"].dropna().unique() if str(z).strip()])
+                z_opts = existing_zones + ["Add new..."]
+                prev_z = st.session_state.draft.get("Zone","")
+                z_idx = z_opts.index(prev_z) if prev_z in z_opts else 0
+                z_sel = st.selectbox("Zone (existing or new)", z_opts, index=z_idx)
+                if z_sel == "Add new...":
+                    new_zone = st.text_input("New Zone Name","", key="new_zone_name", placeholder="Enter new zone").strip()
+                    st.session_state.draft["Zone"] = new_zone
+                else:
+                    st.session_state.draft["Zone"] = z_sel
+                    
+            elif f=="Break":
+                # Get existing breaks, filtered by zone if selected
+                chosen_zone = st.session_state.draft.get("Zone","")
+                if not records_df.empty and 'Break' in records_df.columns:
+                    if chosen_zone and chosen_zone != "Add new..." and 'Zone' in records_df.columns:
+                        zone_filtered = records_df[records_df["Zone"]==chosen_zone]
+                        breaks_exist = sorted([b for b in zone_filtered["Break"].dropna().unique() if str(b).strip()])
+                    else:
+                        breaks_exist = sorted([b for b in records_df["Break"].dropna().unique() if str(b).strip()])
+                else:
+                    breaks_exist = []
+                options = breaks_exist + ["Add new..."]
+                prev_break = st.session_state.draft.get("Break","")
+                idx = options.index(prev_break) if prev_break in options else 0
+                sel = st.selectbox("Break (existing or new)", options, index=idx)
+                if sel == "Add new...":
+                    new_name = st.text_input("New Break Name","", key="new_break_name", placeholder="Enter new break").strip()
+                    st.session_state.draft["Break"] = new_name
+                else:
+                    st.session_state.draft["Break"] = sel
+                    
+            elif f=="Date":
+                st.session_state.draft[f] = st.date_input(label, st.session_state.draft.get(f, datetime.date.today()))
                 
-                record = {
-                    'Date': session_date,
-                    'Time': session_time,
-                    'Break': break_name,
-                    'Zone': zone_name,
-                    'TOTAL SCORE': total_score,
-                    'publicity': publicity,
-                    'Surfline Primary Swell Size (m)': 0,
-                    'Seabreeze Swell (m)': 0,
-                    'Swell Period (s)': 0,
-                    'Swell Direction': 0,
-                    'Suitable Swell?': 'Yes',
-                    'Swell Score': 0,
-                    'Final Swell Score': 0,
-                    'Swell Comments': swell_comments,
-                    'Wind Bearing': 'N',
-                    'Wind Speed (kn)': 0,
-                    'Suitable Wind?': 'Yes',
-                    'Wind Score': 0,
-                    'Wind Final Score': 0,
-                    'Wind Comments': wind_comments,
-                    'Tide Reading (m)': 0,
-                    'Tide Direction': 'High',
-                    'Tide Suitable?': 'Yes',
-                    'Tide Score': 0,
-                    'Tide Final Score': 0,
-                    'Tide Comments': tide_comments,
-                    'Full Commentary': full_commentary
-                }
+            elif f=="Time":
+                st.session_state.draft[f] = st.time_input(label, st.session_state.draft.get(f, datetime.time(8,0)))
                 
-                if save_record(record):
-                    st.success("✅ Session saved successfully!")
-                    st.session_state.creating = False
-                    st.rerun()
+            elif f=="Wind Bearing":
+                existing = st.session_state.draft.get(f,"")
+                idx_dir = COMPASS_DIRECTIONS.index(existing) if existing in COMPASS_DIRECTIONS else 0
+                st.session_state.draft[f] = st.selectbox(label, COMPASS_DIRECTIONS, index=idx_dir)
+                
+            elif f=="Tide Direction":
+                tide_opts = ["High","Low","Falling","Rising"]
+                cur_val = st.session_state.draft.get(f)
+                if cur_val == "Dropping":  # legacy value
+                    cur_val = "Falling"
+                st.session_state.draft[f] = st.selectbox(
+                    label, tide_opts,
+                    index=tide_opts.index(cur_val) if cur_val in tide_opts else 0
+                )
+                
+            elif "Comments" in f:
+                st.session_state.draft[f] = st.text_area(label, ("" if pd.isna(st.session_state.draft.get(f)) else st.session_state.draft.get(f,"")))
+                
+            elif "Suitable" in f:
+                st.session_state.draft[f] = st.selectbox(
+                    label, ["Yes","No","Ok","Too Big"] if "Swell" in f else ["Yes","No","Ok"],
+                    index=["Yes","No","Ok","Too Big"].index(st.session_state.draft.get(f,"Yes"))
+                        if st.session_state.draft.get(f,"Yes") in ["Yes","No","Ok","Too Big"] else 0
+                )
             else:
-                st.error("Please enter a break name")
+                cur = st.session_state.draft.get(f)
+                if f in int_scores:
+                    st.session_state.draft[f] = st.number_input(label, min_value=0, max_value=10,
+                                                              value=safe_int(cur), step=1, format="%d")
+                elif f in whole_int:
+                    st.session_state.draft[f] = st.number_input(label, value=safe_int(cur), step=1, format="%d")
+                elif f in one_dp:
+                    st.session_state.draft[f] = st.number_input(label, value=safe_float(cur), step=0.1, format="%.1f")
+                else:
+                    st.session_state.draft[f] = st.number_input(label, value=safe_float(cur), step=0.1)
+    
+    # Compute final scores AFTER inputs so they reflect latest changes
+    d = st.session_state.draft
+    fs = (d.get("Swell Score") or 0)*factor_map.get(d.get("Suitable Swell?"),0)
+    fw = (d.get("Wind Score") or 0)*factor_map.get(d.get("Suitable Wind?"),0)
+    ft = (d.get("Tide Score") or 0)*factor_map.get(d.get("Tide Suitable?"),0)
+    d["Final Swell Score"] = round(fs,1)
+    d["Wind Final Score"] = round(fw,1)
+    d["Tide Final Score"] = round(ft,1)
+    total_live = (fs*fw*ft)/3 if all(v is not None for v in [fs,fw,ft]) else 0
+    total_live = round(total_live,1)
+    
+    if "Swell Direction" in d and d.get("Swell Direction") not in (None,""):
+        try: 
+            d["Swell Direction"] = int(float(d["Swell Direction"]))
+        except: 
+            pass
+    
+    # Display live scores in right column
+    with layout_cols[1]:
+        st.markdown(f"""
+<div class="final-score-box">
+  <h4>FINAL SCORES</h4>
+  <div><span class="final-score-label">SWELL</span><br><span class="final-score-val">{fs:.1f}</span></div>
+  <div style="margin-top:.4rem;"><span class="final-score-label">WIND</span><br><span class="final-score-val">{fw:.1f}</span></div>
+  <div style="margin-top:.4rem;"><span class="final-score-label">TIDE</span><br><span class="final-score-val">{ft:.1f}</span></div>
+  <hr style="margin:.6rem 0;border:0;border-top:1px solid #255d63;">
+  <div><span class="final-score-label">TOTAL (live)</span><br><span class="final-score-val">{total_live:.1f}</span></div>
+</div>
+""", unsafe_allow_html=True)
+    
+    # Navigation buttons
+    c1, c2, c3, c4 = st.columns(4)
+    
+    if c1.button("Cancel"):
+        st.session_state.creating = False
+        st.session_state.draft = {}
+        st.rerun()
+        
+    if p > 0 and c2.button("← Prev"):
+        st.session_state.c_page -= 1
+        st.rerun()
+    
+    if p < len(PAGES)-1:
+        if c3.button("Next →"):
+            d = st.session_state.draft
+            block_reason = None
+            
+            # Validation for each page
+            if p == 0:  # Session page
+                if not (d.get("Break","") or "").strip():
+                    block_reason = "Please enter a Break before continuing."
+            elif p == 1:  # Swell page
+                sps = d.get("Surfline Primary Swell Size (m)") or 0
+                sbs = d.get("Seabreeze Swell (m)") or 0
+                if (sps is None or sps <= 0) and (sbs is None or sbs <= 0):
+                    block_reason = "Enter at least one positive swell size (Surfline or Seabreeze)."
+            elif p == 2:  # Wind page
+                wb = d.get("Wind Bearing","")
+                if wb not in COMPASS_DIRECTIONS:
+                    block_reason = "Select a Wind Bearing direction."
+                    
+            if block_reason:
+                st.error(block_reason)
+            else:
+                st.session_state.c_page += 1
+                st.rerun()
+    
+    if p == len(PAGES)-1 and c4.button("✓ Submit"):
+        d = st.session_state.draft
+        comments_present = has_any_comment(d)
+        missing = []
+        
+        # Final validation
+        if not (d.get("Break","") or "").strip():
+            missing.append("Break")
+        sps = d.get("Surfline Primary Swell Size (m)") or 0
+        sbs = d.get("Seabreeze Swell (m)") or 0
+        if (sps is None or sps <= 0) and (sbs is None or sbs <= 0):
+            missing.append("Surfline or Seabreeze Swell (>0)")
+        wind_bearing = d.get("Wind Bearing")
+        if wind_bearing not in COMPASS_DIRECTIONS:
+            missing.append("Wind Bearing (direction)")
+            
+        if missing or not comments_present:
+            msg = ""
+            if missing:
+                msg += f"Missing / invalid: {', '.join(missing)}. "
+            if not comments_present:
+                msg += "Enter at least one comment (Swell/Wind/Tide)."
+            st.error(msg)
+        else:
+            # Build full commentary from component comments
+            full_comm = " ".join([
+                d.get("Swell Comments","") or "", 
+                d.get("Wind Comments","") or "", 
+                d.get("Tide Comments","") or ""
+            ]).strip()
+            
+            # Calculate total score
+            total_score = ((d.get("Final Swell Score",0) or 0) * (d.get("Wind Final Score",0) or 0) * (d.get("Tide Final Score",0) or 0)) / 3
+            total_score = round(total_score,1)
+            
+            # Build record
+            record = {
+                'Date': d.get("Date"),
+                'Time': d.get("Time"),
+                'Break': d.get("Break"),
+                'Zone': d.get("Zone"),
+                'TOTAL SCORE': total_score,
+                'publicity': d.get("Visibility", "Public"),  # Use the selected visibility
+                'Surfline Primary Swell Size (m)': d.get("Surfline Primary Swell Size (m)", 0),
+                'Seabreeze Swell (m)': d.get("Seabreeze Swell (m)", 0),
+                'Swell Period (s)': d.get("Swell Period (s)", 0),
+                'Swell Direction': d.get("Swell Direction"),
+                'Suitable Swell?': d.get("Suitable Swell?", "Yes"),
+                'Swell Score': d.get("Swell Score", 0),
+                'Final Swell Score': d.get("Final Swell Score", 0),
+                'Swell Comments': d.get("Swell Comments", ""),
+                'Wind Bearing': d.get("Wind Bearing", "N"),
+                'Wind Speed (kn)': d.get("Wind Speed (kn)", 0),
+                'Suitable Wind?': d.get("Suitable Wind?", "Yes"),
+                'Wind Score': d.get("Wind Score", 0),
+                'Wind Final Score': d.get("Wind Final Score", 0),
+                'Wind Comments': d.get("Wind Comments", ""),
+                'Tide Reading (m)': d.get("Tide Reading (m)", 0),
+                'Tide Direction': d.get("Tide Direction", "High"),
+                'Tide Suitable?': d.get("Tide Suitable?", "Yes"),
+                'Tide Score': d.get("Tide Score", 0),
+                'Tide Final Score': d.get("Tide Final Score", 0),
+                'Tide Comments': d.get("Tide Comments", ""),
+                'Full Commentary': full_comm
+            }
+            
+            if save_record(record):
+                st.success("✅ Session saved successfully!")
+                st.session_state.creating = False
+                st.session_state.draft = {}
+                st.session_state.c_page = 0
+                st.rerun()
