@@ -113,12 +113,21 @@ def sign_out():
 # DATABASE FUNCTIONS
 # ============================================================
 def load_user_records(publicity_filter: Optional[str] = None) -> pd.DataFrame:
-    """Load records for the current user from Supabase."""
+    """
+    Load all records visible to the current user from Supabase.
+    This includes:
+    - User's own private records
+    - All public records (from any user)
+    - Community records (if user is a member)
+    
+    RLS policies handle the access control automatically.
+    """
     if not st.session_state.user:
         return pd.DataFrame()
     
     try:
-        query = supabase.table('records').select('*').eq('user_id', st.session_state.user.id)
+        # Query all records - RLS policies will filter based on user permissions
+        query = supabase.table('records').select('*')
         
         if publicity_filter:
             query = query.eq('publicity', publicity_filter)
@@ -507,8 +516,8 @@ if not st.session_state.creating:
             page_view = surf_df.iloc[start:end]
             
             # Summary table header
-            cols_show = ["Date", "Break", "Zone", "TOTAL SCORE", "Full Commentary"]
-            widths = [1, 1.5, 1, 1, 2, 0.8]
+            cols_show = ["Date", "Break", "Zone", "TOTAL SCORE", "Visibility", "Full Commentary"]
+            widths = [1, 1.5, 1, 1, 0.8, 2, 0.8]
             sortable = ["Date", "Break", "Zone", "TOTAL SCORE"]
             
             st.markdown('<div class="summary-header">', unsafe_allow_html=True)
@@ -541,7 +550,17 @@ if not st.session_state.creating:
                             val = round(float(val), 1)
                         except:
                             pass
-                    if c == "Full Commentary":
+                    elif c == "Visibility":
+                        # Show publicity with emoji
+                        publicity = row.get('publicity', 'Private')
+                        is_owner = row.get('user_id') == st.session_state.user.id
+                        if publicity == 'Public':
+                            val = "🌍 Public" + (" (yours)" if is_owner else "")
+                        elif publicity == 'Community':
+                            val = "👥 Community" + (" (yours)" if is_owner else "")
+                        else:
+                            val = "🔒 Private"
+                    elif c == "Full Commentary":
                         # Truncate long commentary
                         val_str = str(val) if pd.notna(val) else ""
                         if len(val_str) > 60:
@@ -579,8 +598,23 @@ if not st.session_state.creating:
                 if not detail_record.empty:
                     r = detail_record.iloc[0]
                     record_id = r['id']
+                    is_owner = r.get('user_id') == st.session_state.user.id
+                    publicity = r.get('publicity', 'Private')
                     
                     with st.expander(f"📋 Details for {r.get('Break', 'Record')}", expanded=True):
+                        # Show ownership and visibility status
+                        if publicity == 'Public':
+                            vis_badge = "🌍 Public Record"
+                        elif publicity == 'Community':
+                            vis_badge = "👥 Community Record"
+                        else:
+                            vis_badge = "🔒 Private Record"
+                        
+                        if not is_owner:
+                            st.info(f"{vis_badge} - Shared by another user (view only)")
+                        else:
+                            st.info(f"{vis_badge} - Your record")
+                        
                         factor_map = {"Yes": 1, "Ok": 0.5, "No": 0, "Too Big": 0}
                         key_fields = [
                             "Surfline Primary Swell Size (m)", "Seabreeze Swell (m)", 
@@ -590,15 +624,18 @@ if not st.session_state.creating:
                         
                         if not (st.session_state.editing and st.session_state.edit_index == record_id):
                             # READ-ONLY DISPLAY MODE
-                            hdr_cols = st.columns([6, 1])
-                            with hdr_cols[0]:
+                            if is_owner:
+                                hdr_cols = st.columns([6, 1])
+                                with hdr_cols[0]:
+                                    st.markdown("### Session Details")
+                                with hdr_cols[1]:
+                                    if st.button("✏️ Edit", key=f"edit_{record_id}"):
+                                        st.session_state.editing = True
+                                        st.session_state.edit_index = record_id
+                                        st.session_state.edit_cache = r.to_dict()
+                                        st.rerun()
+                            else:
                                 st.markdown("### Session Details")
-                            with hdr_cols[1]:
-                                if st.button("✏️ Edit", key=f"edit_{record_id}"):
-                                    st.session_state.editing = True
-                                    st.session_state.edit_index = record_id
-                                    st.session_state.edit_cache = r.to_dict()
-                                    st.rerun()
                             
                             # Key metrics at top
                             kvals = {k: r.get(k) for k in key_fields if k in r}

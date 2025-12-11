@@ -132,38 +132,34 @@ CREATE POLICY "Users can insert their own records"
     ON public.records FOR INSERT
     WITH CHECK (user_id = auth.uid());
 
--- Users can view their own private records
-CREATE POLICY "Users can view their own private records"
+-- Authenticated users can view records based on publicity:
+-- 1. Their own private records
+-- 2. Any public record (from any user)
+-- 3. Community records if they're a member
+CREATE POLICY "Users can view accessible records"
     ON public.records FOR SELECT
     USING (
-        user_id = auth.uid() 
-        AND publicity = 'Private'
-    );
-
--- Anyone can view public records
-CREATE POLICY "Anyone can view public records"
-    ON public.records FOR SELECT
-    USING (publicity = 'Public');
-
--- Community members can view community records
-CREATE POLICY "Community members can view community records"
-    ON public.records FOR SELECT
-    USING (
-        publicity = 'Community' 
-        AND community_id IN (
+        -- Own private records
+        (user_id = auth.uid() AND publicity = 'Private')
+        OR
+        -- All public records
+        (publicity = 'Public')
+        OR
+        -- Community records where user is a member
+        (publicity = 'Community' AND community_id IN (
             SELECT community_id 
             FROM public.community_members 
             WHERE user_id = auth.uid()
-        )
+        ))
     );
 
--- Users can update their own records
+-- Users can update their own records only
 CREATE POLICY "Users can update their own records"
     ON public.records FOR UPDATE
     USING (user_id = auth.uid())
     WITH CHECK (user_id = auth.uid());
 
--- Users can delete their own records
+-- Users can delete their own records only
 CREATE POLICY "Users can delete their own records"
     ON public.records FOR DELETE
     USING (user_id = auth.uid());
